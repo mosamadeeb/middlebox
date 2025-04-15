@@ -1,0 +1,88 @@
+import math
+import itertools
+
+# Length of codeword
+K = 4
+
+# Bits per symbol
+BPS = 4
+
+# Number of symbols used out of all permutations
+L = 2**BPS
+
+assert L <= math.factorial(K), "Number of symbols exceeds available codewords"
+
+def gen_permutations():
+    # All possible permutations (K!)
+    perms = list(itertools.permutations(range(K), K))
+
+    # Calculate the step size for even spacing
+    step = len(perms) // L
+
+    # Select L permutations evenly spaced
+    selected_perms = [perms[i*step] for i in range(L)]
+
+    return selected_perms
+
+def gen_bit_string_to_permutation_map():
+    """
+    Creates a mapping from bit strings (of length BPS) to permutations.
+    
+    Returns:
+        dict: A dictionary mapping each bit string to its corresponding permutation.
+    """
+    permutations = gen_permutations()
+    bit_string_to_perm = {}
+    
+    # Map each bit string to its corresponding permutation
+    for symbol in range(L):
+        # Convert the symbol to a binary string of length BPS
+        bit_string = format(symbol, f'0{BPS}b')
+        bit_string_to_perm[bit_string] = tuple(permutations[symbol])
+    
+    return bit_string_to_perm
+
+# Symbols of length BPS are guaranteed to exist in the mapping
+SYMBOL_TO_PERM_MAP = gen_bit_string_to_permutation_map()
+
+# Not all permutations may exist in this mapping
+# TODO: Maybe implement error correction by mapping missing permutations to the closest one
+PERM_TO_SYMBOL_MAP = {v: k for k, v in SYMBOL_TO_PERM_MAP.items()}
+print(PERM_TO_SYMBOL_MAP)
+
+def get_bit_string(data_bytes):
+    """
+    Converts bytes to a string of bits, ensuring the length is a multiple of BPS.
+    
+    Args:
+        data_bytes (bytes): The input bytes to convert
+        
+    Returns:
+        str: A string of bits ('0's and '1's) with length divisible by BPS
+    """
+    # Convert bytes to a string of bits
+    bit_string = ''.join(format(byte, '08b') for byte in data_bytes)
+    
+    # Calculate padding needed to make length divisible by BPS
+    remainder = len(bit_string) % BPS
+    padding_length = 0 if remainder == 0 else BPS - remainder
+    
+    # Pad the bit string to make its length divisible by BPS
+    padded_bit_string = bit_string + '0' * padding_length
+    
+    return padded_bit_string
+
+def get_byte_from_bit_string(bit_string):
+    """
+    Converts a string of bits to bytes.
+    
+    Args:
+        bit_string (str): The input string of bits ('0's and '1's)
+        
+    Returns:
+        bytes: The converted bytes
+    """
+    # Convert the bit string to bytes
+    byte_array = bytearray(int(bit_string[i:i+8], 2) for i in range(0, len(bit_string), 8))
+    
+    return bytes(byte_array)
