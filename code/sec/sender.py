@@ -8,7 +8,9 @@ import itertools
 
 from packet_order_code import K, BPS, SYMBOL_TO_PERM_MAP, get_bit_string
 
-TRANSMISSION_RATE = 0.01  # seconds
+TRANSMISSION_RATE = 0.005  # seconds
+
+NUMBER_OF_PACKETS = 3000
 
 def calculate_tcp_checksum(ip_packet, tcp_segment):
     """
@@ -44,7 +46,7 @@ def sender():
     # This has the nice side effect of the payload being 1 byte long
     message_cycle = itertools.cycle('ABCDEFGHIJKLMNOPQRSTUVWXYZ')
 
-    covert_message = 'The quick brown fox jumps over the lazy dog. '
+    covert_message = 'The quick brown fox jumps over the lazy dog.'
     covert_message_symbols = get_bit_string(covert_message.encode('utf-8'))
     covert_message_symbols = [covert_message_symbols[i:i+BPS] for i in range(0, len(covert_message_symbols), BPS)]
     covert_message_cycle = itertools.cycle(covert_message_symbols)
@@ -85,6 +87,8 @@ def sender():
         send(ack_packet, verbose=0)
         
         print("TCP connection established")
+
+        counter = 0
         
         # Step 2: Send data packets
         while True:
@@ -130,6 +134,12 @@ def sender():
             
             print(f"Sent symbol: {symbol} in frame: [{seq_num}, ..., {seq_num + K - 1}]")
             seq_num += K
+
+            counter += K
+            if counter >= NUMBER_OF_PACKETS:
+                break
+        
+        print("All packets sent..")
 
 
     except Exception as e:

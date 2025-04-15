@@ -48,7 +48,6 @@ SYMBOL_TO_PERM_MAP = gen_bit_string_to_permutation_map()
 # Not all permutations may exist in this mapping
 # TODO: Maybe implement error correction by mapping missing permutations to the closest one
 PERM_TO_SYMBOL_MAP = {v: k for k, v in SYMBOL_TO_PERM_MAP.items()}
-print(PERM_TO_SYMBOL_MAP)
 
 def get_bit_string(data_bytes):
     """

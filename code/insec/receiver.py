@@ -10,6 +10,8 @@ from packet_order_code import K, PERM_TO_SYMBOL_MAP, get_byte_from_bit_string
 sec_host = os.getenv('SECURENET_HOST_IP')
 insec_host = os.getenv('INSECURENET_HOST_IP')
 
+NUMBER_OF_PACKETS = 3000
+
 def calculate_tcp_checksum(ip_packet, tcp_segment):
     """
     Calculate TCP checksum with pseudo-header.
@@ -38,6 +40,33 @@ def calculate_tcp_checksum(ip_packet, tcp_segment):
 codeword_buffer = []
 channel_data_buffer = ''
 overall_channel_data_buffer = ''
+
+covert_message = 'The quick brown fox jumps over the lazy dog.'
+covert_message_length = len(covert_message)
+
+counter = 0
+
+total_bit_errors = 0
+
+def check_bit_errors(original_msg, received_msg):
+    # Make sure we compare the minimum length of both messages
+    min_length = min(len(received_msg), len(original_msg))
+    received_msg = received_msg[:min_length]
+    original_msg = original_msg[:min_length]
+
+    # Convert messages to bits and count differences
+    bit_errors = 0
+    for r_char, o_char in zip(received_msg, original_msg):
+        r_bits = format(ord(r_char), '08b')
+        o_bits = format(ord(o_char), '08b')
+        for r_bit, o_bit in zip(r_bits, o_bits):
+            if r_bit != o_bit:
+                bit_errors += 1
+
+    print(f"Bit differences: {bit_errors}")
+
+    global total_bit_errors
+    total_bit_errors += bit_errors
 
 def update_covert_channel(seq):
     """
@@ -72,6 +101,14 @@ def update_covert_channel(seq):
 
                 overall_channel_data_buffer += byte.decode('utf-8')
                 print(f"Overall message: {overall_channel_data_buffer}")
+
+                if len(overall_channel_data_buffer) >= covert_message_length:
+                    print("Full message received. Resetting buffer.")
+
+                    # Calculate bit differences between received message and original message
+                    check_bit_errors(covert_message, overall_channel_data_buffer)
+
+                    overall_channel_data_buffer = ''
 
         codeword_buffer.clear()
 
@@ -149,6 +186,19 @@ def handle_packet(packet):
             # Send ACK
             send(ack_packet, verbose=0)
             # print(f"Sent ACK to {src_ip}:{src_port}")
+
+            global counter
+            counter += 1
+            if counter >= NUMBER_OF_PACKETS:
+                print("Received enough packets, stopping listener.")
+
+                # Check the last set of bit errors
+                check_bit_errors(covert_message[:len(overall_channel_data_buffer)], overall_channel_data_buffer)
+
+                print("Total bit errors:", total_bit_errors)
+
+                # Exit the program
+                os._exit(0)
 
 def start_listener():
     if not sec_host:
