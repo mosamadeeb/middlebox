@@ -53,8 +53,8 @@ codeword_buffer = []
 channel_data_buffer = ""
 overall_channel_data_buffer = ""
 
-covert_message = "The quick brown fox jumps over the lazy dog."
-covert_message_length = len(covert_message)
+# Updated during initialization
+covert_message = ""
 
 counter = 0
 
@@ -116,9 +116,9 @@ def update_covert_channel(seq):
                 channel_data_buffer = channel_data_buffer[8:]
 
                 overall_channel_data_buffer += byte.decode("utf-8", "backslashreplace")
-                print(f"Overall message: {overall_channel_data_buffer}")
+                # print(f"Overall message: {overall_channel_data_buffer}")
 
-                if len(overall_channel_data_buffer) >= covert_message_length:
+                if len(overall_channel_data_buffer) >= len(covert_message):
                     print("Full message received. Resetting buffer.")
 
                     # Calculate bit differences between received message and original message
@@ -235,6 +235,12 @@ def start_listener():
         description="Receiver script with configurable parameters."
     )
     parser.add_argument(
+        "--message_offset",
+        type=int,
+        default=0,
+        help="Start offset for the covert message data (default: 0)",
+    )
+    parser.add_argument(
         "--number_of_packets",
         type=int,
         default=3000,
@@ -254,8 +260,13 @@ def start_listener():
     NUMBER_OF_PACKETS = args.number_of_packets
 
     if args.k > 0:
-        global USE_COVERT_CHANNEL
+        global USE_COVERT_CHANNEL, covert_message
         USE_COVERT_CHANNEL = True
+
+        with open("covert_message.txt", "r") as f:
+            covert_message = f.read().strip()
+        if args.message_offset > 0:
+            covert_message = covert_message[args.message_offset :]
 
         PERM_CONFIG = PermutationConfig(K=args.k, BPS=args.bps)
         PERM_TO_SYMBOL_MAP = gen_permutation_to_bit_string_map(PERM_CONFIG)

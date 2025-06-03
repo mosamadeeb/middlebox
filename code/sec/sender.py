@@ -52,6 +52,12 @@ def sender():
         help="Transmission rate in seconds (default: 0.005)",
     )
     parser.add_argument(
+        "--message_offset",
+        type=int,
+        default=0,
+        help="Start offset for the covert message data (default: 0)",
+    )
+    parser.add_argument(
         "--number_of_packets",
         type=int,
         default=3000,
@@ -84,7 +90,11 @@ def sender():
         PERM_CONFIG = PermutationConfig(K=args.k, BPS=args.bps)
         SYMBOL_TO_PERM_MAP = gen_bit_string_to_permutation_map(PERM_CONFIG)
 
-        covert_message = "The quick brown fox jumps over the lazy dog."
+        with open("covert_message.txt", "r") as f:
+            covert_message = f.read().strip()
+        if args.message_offset > 0:
+            covert_message = covert_message[args.message_offset :]
+
         covert_message_symbols = get_bit_string(
             covert_message.encode("utf-8"), PERM_CONFIG.BPS
         )
