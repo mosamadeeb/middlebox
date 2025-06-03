@@ -202,7 +202,6 @@ def sender():
             while True:
                 payload = next(message_cycle)
                 ack_num = send_packet(payload, seq_num, ack_num)
-                print(f"Sent payload: {payload} in frame: [{seq_num}]")
                 seq_num += 1
                 counter += 1
                 if counter >= NUMBER_OF_PACKETS:

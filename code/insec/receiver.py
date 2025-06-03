@@ -181,12 +181,8 @@ def handle_packet(packet):
     elif packet[TCP].flags & 0x18:  # PSH-ACK flags
         if Raw in packet:
             payload = packet[Raw].load
-            try:
-                decoded_payload = payload.decode("utf-8")
-                print(f"Received data from {src_ip}:{src_port}")
-                print(f"SEQ: {packet[TCP].seq}, Payload: {decoded_payload}")
-            except UnicodeDecodeError:
-                print(f"Received binary data from {src_ip}:{src_port}")
+
+            print(f"Received binary data from {src_ip}:{src_port} with SEQ: {packet[TCP].seq}")
 
             # Send ACK for the received data
             ack_packet = IP(src=dst_ip, dst=src_ip) / TCP(
