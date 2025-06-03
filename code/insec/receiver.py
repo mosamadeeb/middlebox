@@ -16,6 +16,8 @@ NUMBER_OF_PACKETS = 0
 PERM_CONFIG = PermutationConfig()
 PERM_TO_SYMBOL_MAP = dict()
 
+USE_COVERT_CHANNEL = False
+
 
 def calculate_tcp_checksum(ip_packet, tcp_segment):
     """
@@ -189,18 +191,19 @@ def handle_packet(packet):
             send(ack_packet, verbose=0)
             # print(f"Sent ACK to {src_ip}:{src_port}")
 
-            # NOTE: Only packets with payload can carry covert channel data
-            update_covert_channel(packet[TCP].seq)
+            if USE_COVERT_CHANNEL:
+                # NOTE: Only packets with payload can carry covert channel data
+                update_covert_channel(packet[TCP].seq)
 
             global counter
             counter += 1
             if counter >= NUMBER_OF_PACKETS:
                 print("Received enough packets, stopping listener.")
 
-                # Check the last set of bit errors
-                check_bit_errors(covert_message[:len(overall_channel_data_buffer)], overall_channel_data_buffer)
-
-                print("Total bit errors:", total_bit_errors)
+                if USE_COVERT_CHANNEL:
+                    # Check the last set of bit errors
+                    check_bit_errors(covert_message[:len(overall_channel_data_buffer)], overall_channel_data_buffer)
+                    print("Total bit errors:", total_bit_errors)
 
                 # Exit the program
                 os._exit(0)
@@ -216,8 +219,13 @@ def start_listener():
     global NUMBER_OF_PACKETS, PERM_CONFIG, PERM_TO_SYMBOL_MAP
 
     NUMBER_OF_PACKETS = args.number_of_packets
-    PERM_CONFIG = PermutationConfig(K=args.k, BPS=args.bps)
-    PERM_TO_SYMBOL_MAP = gen_permutation_to_bit_string_map(PERM_CONFIG)
+
+    if args.k > 0:
+        global USE_COVERT_CHANNEL
+        USE_COVERT_CHANNEL = True
+
+        PERM_CONFIG = PermutationConfig(K=args.k, BPS=args.bps)
+        PERM_TO_SYMBOL_MAP = gen_permutation_to_bit_string_map(PERM_CONFIG)
 
     if not sec_host:
         print("SECURENET_HOST_IP environment variable is not set.")

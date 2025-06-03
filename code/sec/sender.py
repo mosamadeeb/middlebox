@@ -47,21 +47,22 @@ def sender():
     TRANSMISSION_RATE = args.transmission_rate
     NUMBER_OF_PACKETS = args.number_of_packets
 
-    PERM_CONFIG = PermutationConfig(K=args.k, BPS=args.bps)
-    SYMBOL_TO_PERM_MAP = gen_bit_string_to_permutation_map(PERM_CONFIG)
-
-    host = os.getenv('SECURENET_HOST_IP')
-    dst_ip = os.getenv('INSECURENET_HOST_IP')
-    dst_port = 8888
-
     # Create a cyclic iterator over capital alphabets (A-Z)
     # This has the nice side effect of the payload being 1 byte long
     message_cycle = itertools.cycle('ABCDEFGHIJKLMNOPQRSTUVWXYZ')
 
-    covert_message = 'The quick brown fox jumps over the lazy dog.'
-    covert_message_symbols = get_bit_string(covert_message.encode('utf-8'), PERM_CONFIG.BPS)
-    covert_message_symbols = [covert_message_symbols[i:i+PERM_CONFIG.BPS] for i in range(0, len(covert_message_symbols), PERM_CONFIG.BPS)]
-    covert_message_cycle = itertools.cycle(covert_message_symbols)
+    if args.k > 0:
+        PERM_CONFIG = PermutationConfig(K=args.k, BPS=args.bps)
+        SYMBOL_TO_PERM_MAP = gen_bit_string_to_permutation_map(PERM_CONFIG)
+
+        covert_message = 'The quick brown fox jumps over the lazy dog.'
+        covert_message_symbols = get_bit_string(covert_message.encode('utf-8'), PERM_CONFIG.BPS)
+        covert_message_symbols = [covert_message_symbols[i:i+PERM_CONFIG.BPS] for i in range(0, len(covert_message_symbols), PERM_CONFIG.BPS)]
+        covert_message_cycle = itertools.cycle(covert_message_symbols)
+
+    host = os.getenv('SECURENET_HOST_IP')
+    dst_ip = os.getenv('INSECURENET_HOST_IP')
+    dst_port = 8888
 
     if not host:
         print("SECURENET_HOST_IP environment variable is not set.")
@@ -99,57 +100,68 @@ def sender():
         send(ack_packet, verbose=0)
         
         print("TCP connection established")
+        
+        def send_packet(payload, seq_num, ack_num):
+            # Create data packet with PSH and ACK flags (for established connection)
+            # PSH flag ensures data is pushed to the application layer immediately
+            data_packet = IP(src=src_ip, dst=dst_ip)/TCP(sport=src_port, dport=dst_port, 
+                                                        flags='PA', seq=seq_num, ack=ack_num)/Raw(load=payload)
+            
+            # Remove auto-calculated checksums
+            del data_packet[TCP].chksum
+            del data_packet[IP].chksum
+            
+            # Calculate IP checksum manually
+            ip_checksum = checksum(bytes(data_packet[IP]))
+            data_packet[IP].chksum = ip_checksum
+
+            # Calculate TCP checksum manually
+            tcp_checksum = calculate_tcp_checksum(data_packet[IP], data_packet[TCP])
+            data_packet[TCP].chksum = tcp_checksum
+            
+            # Send the data packet
+            ack_response = sr1(data_packet, timeout=2, verbose=0)
+            
+            if ack_response:
+                # Update acknowledgment numbers
+                ack_num = ack_response[TCP].seq + len(ack_response[Raw].load) if Raw in ack_response else ack_response[TCP].seq
+                print(f"Data packet (SEQ={seq_num}) sent to {dst_ip}:{dst_port}, received acknowledgment")
+            else:
+                print(f"Data packet (SEQ={seq_num}) sent to {dst_ip}:{dst_port}, no acknowledgment received")
+            
+            time.sleep(TRANSMISSION_RATE)
+
+            return ack_num
 
         counter = 0
-        
+    
         # Step 2: Send data packets
-        while True:
-            def send_packet(payload, seq_num, ack_num):
-                # Create data packet with PSH and ACK flags (for established connection)
-                # PSH flag ensures data is pushed to the application layer immediately
-                data_packet = IP(src=src_ip, dst=dst_ip)/TCP(sport=src_port, dport=dst_port, 
-                                                            flags='PA', seq=seq_num, ack=ack_num)/Raw(load=payload)
-                
-                # Remove auto-calculated checksums
-                del data_packet[TCP].chksum
-                del data_packet[IP].chksum
-                
-                # Calculate IP checksum manually
-                ip_checksum = checksum(bytes(data_packet[IP]))
-                data_packet[IP].chksum = ip_checksum
+        if args.k <= 0:
+            # If K is not set, send single packets
+            while True:
+                payload = next(message_cycle)
+                ack_num = send_packet(payload, seq_num, ack_num)
+                print(f"Sent payload: {payload} in frame: [{seq_num}]")
+                seq_num += 1
+                counter += 1
+                if counter >= NUMBER_OF_PACKETS:
+                    break
+        else:
+            while True:
+                payloads = [next(message_cycle) for _ in range(PERM_CONFIG.K)]
 
-                # Calculate TCP checksum manually
-                tcp_checksum = calculate_tcp_checksum(data_packet[IP], data_packet[TCP])
-                data_packet[TCP].chksum = tcp_checksum
-                
-                # Send the data packet
-                ack_response = sr1(data_packet, timeout=2, verbose=0)
-                
-                if ack_response:
-                    # Update acknowledgment numbers
-                    ack_num = ack_response[TCP].seq + len(ack_response[Raw].load) if Raw in ack_response else ack_response[TCP].seq
-                    print(f"Data packet (SEQ={seq_num}) sent to {dst_ip}:{dst_port}, received acknowledgment")
-                else:
-                    print(f"Data packet (SEQ={seq_num}) sent to {dst_ip}:{dst_port}, no acknowledgment received")
-                
-                time.sleep(TRANSMISSION_RATE)
+                symbol = next(covert_message_cycle)
+                symbol_order = SYMBOL_TO_PERM_MAP[symbol]
+                for i in symbol_order:
+                    # TODO: This doesn't account for ack number
+                    ack_num = send_packet(payloads[i], seq_num + i, ack_num)
 
-                return ack_num
-            
-            payloads = [next(message_cycle) for _ in range(PERM_CONFIG.K)]
+                print(f"Sent symbol: {symbol} in frame: [{seq_num}, ..., {seq_num + PERM_CONFIG.K - 1}]")
+                seq_num += PERM_CONFIG.K
 
-            symbol = next(covert_message_cycle)
-            symbol_order = SYMBOL_TO_PERM_MAP[symbol]
-            for i in symbol_order:
-                # TODO: This doesn't account for ack number
-                ack_num = send_packet(payloads[i], seq_num + i, ack_num)
-
-            print(f"Sent symbol: {symbol} in frame: [{seq_num}, ..., {seq_num + PERM_CONFIG.K - 1}]")
-            seq_num += PERM_CONFIG.K
-
-            counter += PERM_CONFIG.K
-            if counter >= NUMBER_OF_PACKETS:
-                break
+                counter += PERM_CONFIG.K
+                if counter >= NUMBER_OF_PACKETS:
+                    break
         
         print("All packets sent..")
 
