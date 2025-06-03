@@ -1,3 +1,4 @@
+import argparse
 import os
 import socket
 import time
@@ -6,11 +7,8 @@ from scapy.all import IP, TCP, Raw, send, sr1
 from scapy.utils import checksum
 import itertools
 
-from packet_order_code import K, BPS, SYMBOL_TO_PERM_MAP, get_bit_string
+from packet_order_code import PermutationConfig, get_bit_string, gen_bit_string_to_permutation_map
 
-TRANSMISSION_RATE = 0.005  # seconds
-
-NUMBER_OF_PACKETS = 3000
 
 def calculate_tcp_checksum(ip_packet, tcp_segment):
     """
@@ -38,6 +36,20 @@ def calculate_tcp_checksum(ip_packet, tcp_segment):
     return checksum(tcp_checksum_data)
 
 def sender():
+    parser = argparse.ArgumentParser(description="Sender script with configurable parameters.")
+    parser.add_argument('--transmission_rate', type=float, default=0.005, help='Transmission rate in seconds (default: 0.005)')
+    parser.add_argument('--number_of_packets', type=int, default=3000, help='Number of packets to send (default: 3000)')
+    parser.add_argument('--k', type=int, default=4, help='Length of codeword (default: 4)')
+    parser.add_argument('--bps', type=int, default=4, help='Bits per symbol (default: 4)')
+
+    args = parser.parse_args()
+
+    TRANSMISSION_RATE = args.transmission_rate
+    NUMBER_OF_PACKETS = args.number_of_packets
+
+    PERM_CONFIG = PermutationConfig(K=args.k, BPS=args.bps)
+    SYMBOL_TO_PERM_MAP = gen_bit_string_to_permutation_map(PERM_CONFIG)
+
     host = os.getenv('SECURENET_HOST_IP')
     dst_ip = os.getenv('INSECURENET_HOST_IP')
     dst_port = 8888
@@ -47,8 +59,8 @@ def sender():
     message_cycle = itertools.cycle('ABCDEFGHIJKLMNOPQRSTUVWXYZ')
 
     covert_message = 'The quick brown fox jumps over the lazy dog.'
-    covert_message_symbols = get_bit_string(covert_message.encode('utf-8'))
-    covert_message_symbols = [covert_message_symbols[i:i+BPS] for i in range(0, len(covert_message_symbols), BPS)]
+    covert_message_symbols = get_bit_string(covert_message.encode('utf-8'), PERM_CONFIG.BPS)
+    covert_message_symbols = [covert_message_symbols[i:i+PERM_CONFIG.BPS] for i in range(0, len(covert_message_symbols), PERM_CONFIG.BPS)]
     covert_message_cycle = itertools.cycle(covert_message_symbols)
 
     if not host:
@@ -124,18 +136,18 @@ def sender():
 
                 return ack_num
             
-            payloads = [next(message_cycle) for _ in range(K)]
+            payloads = [next(message_cycle) for _ in range(PERM_CONFIG.K)]
 
             symbol = next(covert_message_cycle)
             symbol_order = SYMBOL_TO_PERM_MAP[symbol]
             for i in symbol_order:
                 # TODO: This doesn't account for ack number
                 ack_num = send_packet(payloads[i], seq_num + i, ack_num)
-            
-            print(f"Sent symbol: {symbol} in frame: [{seq_num}, ..., {seq_num + K - 1}]")
-            seq_num += K
 
-            counter += K
+            print(f"Sent symbol: {symbol} in frame: [{seq_num}, ..., {seq_num + PERM_CONFIG.K - 1}]")
+            seq_num += PERM_CONFIG.K
+
+            counter += PERM_CONFIG.K
             if counter >= NUMBER_OF_PACKETS:
                 break
         
