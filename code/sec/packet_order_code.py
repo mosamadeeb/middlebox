@@ -1,5 +1,5 @@
-import math
 import itertools
+import math
 
 
 class PermutationConfig:
