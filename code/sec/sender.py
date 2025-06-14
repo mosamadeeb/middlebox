@@ -42,14 +42,12 @@ def calculate_tcp_checksum(ip_packet, tcp_segment):
 
 
 def sender():
-    parser = argparse.ArgumentParser(
-        description="Sender script with configurable parameters."
-    )
+    parser = argparse.ArgumentParser(description="Sender script with configurable parameters.")
     parser.add_argument(
         "--transmission_rate",
         type=float,
-        default=0.005,
-        help="Transmission rate in seconds (default: 0.005)",
+        default=0.010,
+        help="Transmission rate in seconds (default: 0.010)",
     )
     parser.add_argument(
         "--message_offset",
@@ -58,17 +56,13 @@ def sender():
         help="Start offset for the covert message data (default: 0)",
     )
     parser.add_argument(
-        "--number_of_packets",
+        "--number-of-packets",
         type=int,
         default=3000,
         help="Number of packets to send (default: 3000)",
     )
-    parser.add_argument(
-        "--k", type=int, default=4, help="Length of codeword (default: 4)"
-    )
-    parser.add_argument(
-        "--bps", type=int, default=4, help="Bits per symbol (default: 4)"
-    )
+    parser.add_argument("--k", type=int, default=4, help="Length of codeword (default: 4)")
+    parser.add_argument("--bps", type=int, default=4, help="Bits per symbol (default: 4)")
 
     args = parser.parse_args()
 
@@ -95,9 +89,7 @@ def sender():
         if args.message_offset > 0:
             covert_message = covert_message[args.message_offset :]
 
-        covert_message_symbols = get_bit_string(
-            covert_message.encode("utf-8"), PERM_CONFIG.BPS
-        )
+        covert_message_symbols = get_bit_string(covert_message.encode("utf-8"), PERM_CONFIG.BPS)
         covert_message_symbols = [
             covert_message_symbols[i : i + PERM_CONFIG.BPS]
             for i in range(0, len(covert_message_symbols), PERM_CONFIG.BPS)
@@ -128,9 +120,7 @@ def sender():
         print("Establishing TCP connection...")
 
         # SYN packet
-        syn_packet = IP(src=src_ip, dst=dst_ip) / TCP(
-            sport=src_port, dport=dst_port, flags="S", seq=seq_num
-        )
+        syn_packet = IP(src=src_ip, dst=dst_ip) / TCP(sport=src_port, dport=dst_port, flags="S", seq=seq_num)
         syn_ack_packet = sr1(syn_packet, timeout=2, verbose=0)
 
         if not syn_ack_packet:
@@ -154,9 +144,7 @@ def sender():
             # PSH flag ensures data is pushed to the application layer immediately
             data_packet = (
                 IP(src=src_ip, dst=dst_ip)
-                / TCP(
-                    sport=src_port, dport=dst_port, flags="PA", seq=seq_num, ack=ack_num
-                )
+                / TCP(sport=src_port, dport=dst_port, flags="PA", seq=seq_num, ack=ack_num)
                 / Raw(load=payload)
             )
 
@@ -172,27 +160,14 @@ def sender():
             tcp_checksum = calculate_tcp_checksum(data_packet[IP], data_packet[TCP])
             data_packet[TCP].chksum = tcp_checksum
 
-            # Send the data packet
-            ack_response = sr1(data_packet, timeout=2, verbose=0)
-
-            if ack_response:
-                # Update acknowledgment numbers
-                ack_num = (
-                    ack_response[TCP].seq + len(ack_response[Raw].load)
-                    if Raw in ack_response
-                    else ack_response[TCP].seq
-                )
-                print(
-                    f"Data packet (SEQ={seq_num}) sent to {dst_ip}:{dst_port}, received acknowledgment"
-                )
-            else:
-                print(
-                    f"Data packet (SEQ={seq_num}) sent to {dst_ip}:{dst_port}, no acknowledgment received"
-                )
+            # Send the data packet without waiting for a response
+            send(data_packet, verbose=0)
+            print(f"Sent SEQ={seq_num}")
 
             time.sleep(TRANSMISSION_RATE)
 
-            return ack_num
+            # ack_num is not updated here as we are not waiting for ACKs
+            # The caller will need to manage ack_num if necessary based on the protocol logic
 
         counter = 0
 
@@ -201,7 +176,8 @@ def sender():
             # If K is not set, send single packets
             while True:
                 payload = next(message_cycle)
-                ack_num = send_packet(payload, seq_num, ack_num)
+                # Send acknowledgment for the last sent packet (estimated ack_num)
+                send_packet(payload, seq_num, seq_num - 1)
                 seq_num += 1
                 counter += 1
                 if counter >= NUMBER_OF_PACKETS:
@@ -213,12 +189,9 @@ def sender():
                 symbol = next(covert_message_cycle)
                 symbol_order = SYMBOL_TO_PERM_MAP[symbol]
                 for i in symbol_order:
-                    # TODO: This doesn't account for ack number
-                    ack_num = send_packet(payloads[i], seq_num + i, ack_num)
+                    send_packet(payloads[i], seq_num + i, seq_num - 1)
 
-                print(
-                    f"Sent symbol: {symbol} in frame: [{seq_num}, ..., {seq_num + PERM_CONFIG.K - 1}]"
-                )
+                print(f"Sent symbol: {symbol} in frame: [{seq_num}, ..., {seq_num + PERM_CONFIG.K - 1}]")
                 seq_num += PERM_CONFIG.K
 
                 counter += PERM_CONFIG.K
