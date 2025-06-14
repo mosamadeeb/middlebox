@@ -15,6 +15,9 @@ from scapy.all import IP, TCP, Raw, send, sr1
 from scapy.utils import checksum
 
 
+sent_counter = 0
+
+
 def calculate_tcp_checksum(ip_packet, tcp_segment):
     """
     Calculate TCP checksum with pseudo-header.
@@ -163,6 +166,13 @@ def sender():
             # Send the data packet without waiting for a response
             send(data_packet, verbose=0)
             print(f"Sent SEQ={seq_num}")
+
+            global sent_counter
+            sent_counter += 1
+
+            if sent_counter % 1000 == 0:
+                print("Sleeping for a longer duration to avoid flooding...")
+                time.sleep(0.5)  # Sleep longer every 1000 packets to avoid flooding
 
             time.sleep(TRANSMISSION_RATE)
 

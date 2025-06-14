@@ -92,6 +92,12 @@ func processEthernetPacket(nc *nats.Conn, iface string, data []byte, seqChan cha
 	}()
 }
 
+func logSlowConsumer(nc *nats.Conn, sub *nats.Subscription, err error) {
+	if err != nil {
+		log.Printf("Slow consumer detected: %v\n", err)
+	}
+}
+
 func main() {
 	log.Println("Hello, World!")
 	url := os.Getenv("NATS_SURVEYOR_SERVERS")
@@ -143,12 +149,9 @@ func main() {
 	}()
 
 	// Connect to a server
-	nc, _ := nats.Connect(url)
+	nc, _ := nats.Connect(url, nats.ErrorHandler(logSlowConsumer))
 	defer nc.Drain()
-	// Simple Publisher
-	// nc.Publish("foo", []byte("Hello World"))
-
-	println("Connected to NATS server")
+	log.Println("Connected to NATS server") // Changed from println
 
 	lastMessageTime := time.Now()
 
@@ -187,7 +190,8 @@ func main() {
 
 	// Drain connection (Preferred for responders)
 	// Close() not needed if this is called.
+	// nc.Drain() is deferred in main
 
 	// Close connection
-	nc.Close()
+	// nc.Close() // Covered by nc.Drain()
 }
