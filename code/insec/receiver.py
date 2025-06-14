@@ -6,7 +6,6 @@ import struct
 from packet_order_code import (
     PermutationConfig,
     gen_permutation_to_bit_string_map,
-    get_byte_from_bit_string,
 )
 from scapy.all import IP, TCP, Raw, send, sniff
 from scapy.utils import checksum
@@ -51,35 +50,14 @@ def calculate_tcp_checksum(ip_packet, tcp_segment):
 
 codeword_buffer = []
 channel_data_buffer = ""
-overall_channel_data_buffer = ""
 
 # Updated during initialization
-covert_message = ""
+covert_message_iterator = None
 
 counter = 0
 
+total_bits = 0
 total_bit_errors = 0
-
-
-def check_bit_errors(original_msg, received_msg):
-    # Make sure we compare the minimum length of both messages
-    min_length = min(len(received_msg), len(original_msg))
-    received_msg = received_msg[:min_length]
-    original_msg = original_msg[:min_length]
-
-    # Convert messages to bits and count differences
-    bit_errors = 0
-    for r_char, o_char in zip(received_msg, original_msg):
-        r_bits = format(ord(r_char), "08b")
-        o_bits = format(ord(o_char), "08b")
-        for r_bit, o_bit in zip(r_bits, o_bits):
-            if r_bit != o_bit:
-                bit_errors += 1
-
-    print(f"Bit differences: {bit_errors}")
-
-    global total_bit_errors
-    total_bit_errors += bit_errors
 
 
 def update_covert_channel(seq):
@@ -89,42 +67,35 @@ def update_covert_channel(seq):
     Args:
         seq: The sequence number of the packet
     """
-    global codeword_buffer, channel_data_buffer, overall_channel_data_buffer
+    global codeword_buffer, channel_data_buffer, total_bits, total_bit_errors
     codeword_buffer.append(seq)
 
     # Check if we have reached the limit of K packets
     if len(codeword_buffer) >= PERM_CONFIG.K:
         # Create the permutation based on the ordering of the original sequence numbers
-        sorted_seq_nums = sorted(
-            range(len(codeword_buffer)), key=lambda i: codeword_buffer[i]
-        )
+        sorted_seq_nums = sorted(range(len(codeword_buffer)), key=lambda i: codeword_buffer[i])
         codeword_perm = [sorted_seq_nums.index(i) for i in range(len(codeword_buffer))]
 
-        print(f"Received permutation: {codeword_perm}")
-
-        print(tuple(codeword_perm))
         symbol = PERM_TO_SYMBOL_MAP.get(tuple(codeword_perm))
+        total_bits += PERM_CONFIG.BPS
+
         if not symbol:
+            total_bit_errors += PERM_CONFIG.BPS
             print(f"Received INVALID permutation: {codeword_perm}")
         else:
+            # Compare the received symbol with the expected one per bit
+            for i in range(PERM_CONFIG.BPS):
+                if symbol[i] != next(covert_message_iterator):
+                    total_bit_errors += 1
+
             print(f"Received symbol: {symbol} from permutation: {codeword_perm}")
-            channel_data_buffer += symbol
 
-            if len(channel_data_buffer) >= 8:
-                byte = get_byte_from_bit_string(channel_data_buffer[:8])
-                print(f"Gathered byte: {byte} from buffer")
-                channel_data_buffer = channel_data_buffer[8:]
-
-                overall_channel_data_buffer += byte.decode("utf-8", "backslashreplace")
-                # print(f"Overall message: {overall_channel_data_buffer}")
-
-                if len(overall_channel_data_buffer) >= len(covert_message):
-                    print("Full message received. Resetting buffer.")
-
-                    # Calculate bit differences between received message and original message
-                    check_bit_errors(covert_message, overall_channel_data_buffer)
-
-                    overall_channel_data_buffer = ""
+            # # Collect symbols into bytes for printing
+            # channel_data_buffer += symbol
+            # if len(channel_data_buffer) >= 8:
+            #     byte = get_byte_from_bit_string(channel_data_buffer[:8])
+            #     print(f"Gathered byte: {byte} from buffer")
+            #     channel_data_buffer = channel_data_buffer[8:]
 
         codeword_buffer.clear()
 
@@ -157,9 +128,7 @@ def handle_packet(packet):
         seq = 10000  # Our initial seq number
         ack = packet[TCP].seq + 1
 
-        syn_ack = IP(src=dst_ip, dst=src_ip) / TCP(
-            sport=dst_port, dport=src_port, flags="SA", seq=seq, ack=ack
-        )
+        syn_ack = IP(src=dst_ip, dst=src_ip) / TCP(sport=dst_port, dport=src_port, flags="SA", seq=seq, ack=ack)
 
         # Calculate checksums
         del syn_ack[TCP].chksum
@@ -172,9 +141,7 @@ def handle_packet(packet):
         print(f"Sent SYN-ACK to {src_ip}:{src_port}")
 
     # Handle ACK packet (part of three-way handshake)
-    elif (
-        packet[TCP].flags & 0x10 and not packet[TCP].flags & 0x08
-    ):  # ACK flag without PSH
+    elif packet[TCP].flags & 0x10 and not packet[TCP].flags & 0x08:  # ACK flag without PSH
         print(f"Received ACK from {src_ip}:{src_port}")
 
     # Handle data packet (PSH-ACK)
@@ -182,7 +149,7 @@ def handle_packet(packet):
         if Raw in packet:
             payload = packet[Raw].load
 
-            print(f"Received binary data from {src_ip}:{src_port} with SEQ: {packet[TCP].seq}")
+            print(f"Received SEQ={packet[TCP].seq}")
 
             # Send ACK for the received data
             ack_packet = IP(src=dst_ip, dst=src_ip) / TCP(
@@ -197,9 +164,7 @@ def handle_packet(packet):
             del ack_packet[TCP].chksum
             del ack_packet[IP].chksum
             ack_packet[IP].chksum = checksum(bytes(ack_packet[IP]))
-            ack_packet[TCP].chksum = calculate_tcp_checksum(
-                ack_packet[IP], ack_packet[TCP]
-            )
+            ack_packet[TCP].chksum = calculate_tcp_checksum(ack_packet[IP], ack_packet[TCP])
 
             # Send ACK
             send(ack_packet, verbose=0)
@@ -215,21 +180,16 @@ def handle_packet(packet):
                 print("Received enough packets, stopping listener.")
 
                 if USE_COVERT_CHANNEL:
-                    # Check the last set of bit errors
-                    check_bit_errors(
-                        covert_message[: len(overall_channel_data_buffer)],
-                        overall_channel_data_buffer,
-                    )
+                    print("Total bits received:", total_bits)
                     print("Total bit errors:", total_bit_errors)
+                    print(f"Bit error rate: {total_bit_errors / total_bits:.6f}")
 
                 # Exit the program
                 os._exit(0)
 
 
 def start_listener():
-    parser = argparse.ArgumentParser(
-        description="Receiver script with configurable parameters."
-    )
+    parser = argparse.ArgumentParser(description="Receiver script with configurable parameters.")
     parser.add_argument(
         "--message_offset",
         type=int,
@@ -237,17 +197,13 @@ def start_listener():
         help="Start offset for the covert message data (default: 0)",
     )
     parser.add_argument(
-        "--number_of_packets",
+        "--number-of-packets",
         type=int,
         default=3000,
         help="Number of packets to send (default: 3000)",
     )
-    parser.add_argument(
-        "--k", type=int, default=4, help="Length of codeword (default: 4)"
-    )
-    parser.add_argument(
-        "--bps", type=int, default=4, help="Bits per symbol (default: 4)"
-    )
+    parser.add_argument("--k", type=int, default=4, help="Length of codeword (default: 4)")
+    parser.add_argument("--bps", type=int, default=4, help="Bits per symbol (default: 4)")
 
     args = parser.parse_args()
 
@@ -256,16 +212,34 @@ def start_listener():
     NUMBER_OF_PACKETS = args.number_of_packets
 
     if args.k > 0:
-        global USE_COVERT_CHANNEL, covert_message
+        global USE_COVERT_CHANNEL, covert_message_iterator
         USE_COVERT_CHANNEL = True
+
+        PERM_CONFIG = PermutationConfig(K=args.k, BPS=args.bps)
+        PERM_TO_SYMBOL_MAP = gen_permutation_to_bit_string_map(PERM_CONFIG)
 
         with open("covert_message.txt", "r") as f:
             covert_message = f.read().strip()
         if args.message_offset > 0:
             covert_message = covert_message[args.message_offset :]
 
-        PERM_CONFIG = PermutationConfig(K=args.k, BPS=args.bps)
-        PERM_TO_SYMBOL_MAP = gen_permutation_to_bit_string_map(PERM_CONFIG)
+        # Convert the message to a bit string of the expected length based on number of packets and BPS
+        num_of_symbols = NUMBER_OF_PACKETS // PERM_CONFIG.K
+        expected_length_bits = num_of_symbols * PERM_CONFIG.BPS
+
+        # Trim message if too long, or repeat if too short
+        if len(covert_message) * 8 > expected_length_bits:
+            covert_message = covert_message[: 1 + (expected_length_bits // 8)]
+        else:
+            while len(covert_message) * 8 < expected_length_bits:
+                covert_message += covert_message
+                covert_message = covert_message[: 1 + (expected_length_bits // 8)]
+
+        covert_message_bits = "".join(format(ord(c), "08b") for c in covert_message)
+        covert_message_bits = covert_message_bits[:expected_length_bits]
+
+        # Create an iterator for the covert message bits
+        covert_message_iterator = iter(covert_message_bits)
 
     if not sec_host:
         print("SECURENET_HOST_IP environment variable is not set.")
