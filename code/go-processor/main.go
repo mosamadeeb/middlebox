@@ -4,34 +4,58 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"math"
 	"math/rand/v2"
 	"os"
+	"strconv" // Added for sequence logging
+	"strings" // Added for sequence logging
+	"sync"    // Added for graceful shutdown
 	"time"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/nats-io/nats.go"
-
-	"go-processor/analyzer"
 )
 
 // Create a seeded random source for reproducibility
 var (
-	// random    = rand.New(rand.NewPCG(41, 42))
-	random    = rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64()))
-	meanDelay float64 // Mean in milliseconds
+	random               = rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64()))
+	meanDelay            float64 // Mean in milliseconds
+	totalSequencesLogged uint64  // Counter for logged sequences
 )
 
-// TODO: check channel buffer size
-var packetChan = make(chan analyzer.Packet, 1000)
+var seqLogFilename string // Filename for sequence logs
+const (
+	seqBufferMaxSize = 1000 // Buffer size for batching sequence writes
+	timeout          = 10 * time.Second
+)
 
-var csvFilename string
+// Function to write sequences to file
+func writeSequencesToFile(sequences []uint64, filename string) {
+	if len(sequences) == 0 {
+		return
+	}
 
-const timeout = 10 * time.Second
+	f, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		log.Printf("Error opening sequence log file %s: %v\n", filename, err)
+		return
+	}
+	defer f.Close()
+
+	var b strings.Builder
+	for _, seq := range sequences {
+		b.WriteString(strconv.FormatUint(seq, 10) + " ")
+	}
+
+	if _, err := f.WriteString(b.String()); err != nil {
+		log.Printf("Error writing sequences to file %s: %v\n", filename, err)
+		return // Don't count if write fails
+	}
+	totalSequencesLogged += uint64(len(sequences)) // Increment counter
+}
 
 // Function to process the ethernet packet
-func processEthernetPacket(nc *nats.Conn, iface string, data []byte) {
+func processEthernetPacket(nc *nats.Conn, iface string, data []byte, seqChan chan<- uint64) { // Added seqChan parameter
 	// Use gopacket to dissect the packet
 	packet := gopacket.NewPacket(data, layers.LayerTypeEthernet, gopacket.Default)
 	if packet.ErrorLayer() != nil {
@@ -42,20 +66,15 @@ func processEthernetPacket(nc *nats.Conn, iface string, data []byte) {
 	go func() {
 		// Add a random delay before publishing the packet
 		randomValue := meanDelay * random.ExpFloat64()
-
-		// log.Println("Sleeping for:", randomValue, "ms")
 		time.Sleep(time.Duration(randomValue) * time.Millisecond)
 
 		if iface == "inpktsec" {
 			if tcpLayer := packet.Layer(layers.LayerTypeTCP); tcpLayer != nil {
 				tcp := tcpLayer.(*layers.TCP)
-				// log.Printf("TCP packet received from sec: Seq: %d\n", tcp.Seq)
+				log.Printf("Sequence arrived: %d\n", tcp.Seq) // Log sequence number as it arrives
 
-				// Add the packet to the analyzer channel
-				packetChan <- analyzer.Packet{
-					SequenceNumber: uint64(tcp.Seq),
-					ArrivalTime:    time.Now(),
-				}
+				// Send the sequence number to the analyzer channel
+				seqChan <- uint64(tcp.Seq)
 			}
 		}
 
@@ -87,69 +106,40 @@ func main() {
 
 	log.Printf("Using mean delay of %.5f milliseconds\n", meanDelay)
 
-	// Setup analyzer channel and configuration
-	metricsChan := make(chan analyzer.MetricsReport, 100)
+	// Setup sequence channel
+	seqChan := make(chan uint64, 10000) // Channel buffer for sequence numbers
 
-	config := analyzer.Config{
-		FrameSizeN:            24,                // Calculate RD over frames of N packets
-		PermutationFrameSizeK: 3,                 // Analyze permutations of K packets
-		ReportInterval:        100 * time.Second, // Report metrics every x seconds if a frame was not completed before that
-	}
-
-	// Generate CSV filename
+	// Generate sequence log filename
 	timestampStr := time.Now().Format("20060102_150405")
-	csvFilename = fmt.Sprintf("metrics_delay%.2f_N%d_K%d_%s.csv",
-		meanDelay, config.FrameSizeN, config.PermutationFrameSizeK, timestampStr)
-	log.Printf("Metrics will be saved to: %s", csvFilename)
+	seqLogFilename = fmt.Sprintf("sequence_log_delay%.2f_%s.txt",
+		meanDelay, timestampStr)
+	log.Printf("Sequence numbers will be saved to: %s", seqLogFilename)
 
-	// Pre-generate canonical permutation keys if k > 0 for header consistency
-	if config.PermutationFrameSizeK > 0 {
-		canonicalPermutationKeys = generateCanonicalPermutationKeys(config.PermutationFrameSizeK)
-	}
+	var wg sync.WaitGroup // WaitGroup for the sequence logger
 
-	reorderAnalyzer := analyzer.NewAnalyzer(config, packetChan, metricsChan)
-	go reorderAnalyzer.Start()
-
-	// Goroutine to print metrics from metricsChan and save to CSV
+	// Goroutine to log sequence numbers to a file
+	wg.Add(1)
 	go func() {
-		var reportsBuffer []analyzer.MetricsReport
-		const batchSize = 10
+		defer wg.Done()
+		seqBuffer := make([]uint64, 0, seqBufferMaxSize) // Initialize buffer with max size
 
-		for report := range metricsChan {
-			log.Printf("--- Metrics Report at %s ---\n", report.Timestamp.Format(time.RFC3339))
-			if len(report.RDHistogram) > 0 {
-				log.Printf("  RD Histogram (N=%d): %v\n", config.FrameSizeN, report.RDHistogram)
-			} else {
-				log.Printf("  RD Histogram (N=%d): No data yet or FrameSizeN is 0.\n", config.FrameSizeN)
+		// Inner defer to ensure buffer is flushed when this goroutine exits (e.g., channel closed)
+		defer func() {
+			if len(seqBuffer) > 0 {
+				writeSequencesToFile(seqBuffer, seqLogFilename)
+				log.Printf("Flushed remaining %d sequences to %s.\n", len(seqBuffer), seqLogFilename)
 			}
-			log.Printf("  RBD Current Occupancy: %d\n", report.RBDCurrentOccupancy)
-			log.Printf("  RBD Max In Interval: %d\n", report.RBDMaxObservedInInterval)
-			if report.TotalPermutations > 0 {
-				log.Printf("  Permutation Frequencies (k=%d): %v (Total Perms: %d)\n", config.PermutationFrameSizeK, report.PermutationFrequencies, report.TotalPermutations)
-				log.Printf("  Permutation Entropy: %.4f\n", report.PermutationEntropy)
-				if config.PermutationFrameSizeK > 0 {
-					maxEntropy := math.Log2(float64(analyzer.Factorial(config.PermutationFrameSizeK)))
-					log.Printf("    (Max possible entropy for k=%d: %.4f)\n", config.PermutationFrameSizeK, maxEntropy)
-				}
-			} else {
-				log.Printf("  No permutations processed in this interval (or k=0).\n")
-			}
-			log.Println("------------------------------------")
+			log.Printf("Total sequences logged to file: %d\n", totalSequencesLogged) // Print total count
+			log.Println("Sequence logging goroutine finished.")
+		}()
 
-			reportsBuffer = append(reportsBuffer, report)
-			if len(reportsBuffer) >= batchSize {
-				writeReportsToCSV(reportsBuffer, csvFilename, config.PermutationFrameSizeK)
-				reportsBuffer = []analyzer.MetricsReport{} // Clear buffer
+		for seq := range seqChan {
+			seqBuffer = append(seqBuffer, seq)
+			if len(seqBuffer) >= seqBufferMaxSize {
+				writeSequencesToFile(seqBuffer, seqLogFilename)
+				seqBuffer = []uint64{} // Clear buffer
 			}
 		}
-		// Write any remaining reports in the buffer after the channel is closed
-		if len(reportsBuffer) > 0 {
-			writeReportsToCSV(reportsBuffer, csvFilename, config.PermutationFrameSizeK)
-		}
-		log.Println("Metrics reporting goroutine finished. CSV saving complete.")
-
-		// Exit the program gracefully
-		os.Exit(0)
 	}()
 
 	// Connect to a server
@@ -172,25 +162,24 @@ func main() {
 		for {
 			time.Sleep(1 * time.Second)
 			if time.Since(lastMessageTime) > timeout {
-				log.Printf("Timeout: No message received from inpktsec in %s. Exiting.\n", timeout)
-				os.Exit(1)
+				log.Printf("Timeout: No message received from inpktsec in %s. Closing sequence channel and exiting.\n", timeout)
+				close(seqChan) // Signal sequence logger to flush and finish
+				wg.Wait()      // Wait for sequence logger to complete its final write
+				log.Println("Exiting due to timeout.")
+				os.Exit(1) // Exit the program
 			}
 		}
 	}()
 
 	// Simple Subscriber
 	nc.Subscribe("inpktsec", func(m *nats.Msg) {
-		// log.Printf("Received a message: %s\n", string(m.Data))
-		// Process the incoming ethernet packet here
-		processEthernetPacket(nc, m.Subject, m.Data)
-		resetInPktSecTimer() // Reset the timer on receiving a message
+		processEthernetPacket(nc, m.Subject, m.Data, seqChan) // Pass seqChan
+		resetInPktSecTimer()                                  // Reset the timer on receiving a message
 	})
 
 	// Simple Subscriber
 	nc.Subscribe("inpktinsec", func(m *nats.Msg) {
-		// log.Printf("Received a message: %s\n", string(m.Data))
-		// Process the incoming ethernet packet here
-		processEthernetPacket(nc, m.Subject, m.Data)
+		processEthernetPacket(nc, m.Subject, m.Data, seqChan) // Pass seqChan
 	})
 
 	// Keep the connection alive
