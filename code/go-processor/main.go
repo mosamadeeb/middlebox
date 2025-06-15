@@ -19,7 +19,8 @@ import (
 // Create a seeded random source for reproducibility
 var (
 	random               = rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64()))
-	meanDelay            float64 // Mean in milliseconds
+	delay                float64 // Delay in milliseconds
+	meanJitter           float64 // Jitter mean in milliseconds
 	totalSequencesLogged uint64  // Counter for logged sequences
 )
 
@@ -65,8 +66,8 @@ func processEthernetPacket(nc *nats.Conn, iface string, data []byte, seqChan cha
 
 	go func() {
 		// Add a random delay before publishing the packet
-		randomValue := meanDelay * random.ExpFloat64()
-		time.Sleep(time.Duration(randomValue) * time.Millisecond)
+		randomJitter := meanJitter * random.ExpFloat64()
+		time.Sleep(time.Duration(delay+randomJitter) * time.Millisecond)
 
 		if iface == "inpktsec" {
 			if tcpLayer := packet.Layer(layers.LayerTypeTCP); tcpLayer != nil {
@@ -107,18 +108,19 @@ func main() {
 	log.Println("NATS_SURVEYOR_SERVERS: ", url)
 
 	// Set up command-line flags
-	flag.Float64Var(&meanDelay, "mean", 1.0, "Mean delay in milliseconds for exponential distribution")
+	flag.Float64Var(&delay, "delay", 20.0, "Fixed delay to add in milliseconds")
+	flag.Float64Var(&meanJitter, "jitter", 1.0, "Mean jitter in milliseconds for exponential distribution")
 	flag.Parse()
 
-	log.Printf("Using mean delay of %.5f milliseconds\n", meanDelay)
+	log.Printf("Using mean jitter of %.5f milliseconds\n", meanJitter)
 
 	// Setup sequence channel
 	seqChan := make(chan uint64, 10000) // Channel buffer for sequence numbers
 
 	// Generate sequence log filename
 	timestampStr := time.Now().Format("20060102_150405")
-	seqLogFilename = fmt.Sprintf("sequence_log_delay%.2f_%s.txt",
-		meanDelay, timestampStr)
+	seqLogFilename = fmt.Sprintf("sequence_log_jitter%.2f_%s.txt",
+		meanJitter, timestampStr)
 	log.Printf("Sequence numbers will be saved to: %s", seqLogFilename)
 
 	var wg sync.WaitGroup // WaitGroup for the sequence logger
