@@ -215,7 +215,7 @@ void *capture_packets(void *arg) {
 void handle_packet_from_interface(unsigned char *buffer, int size, char *in_iface) {
     
     natsStatus s;
-    print_packet(buffer, size, in_iface, false);
+    // print_packet(buffer, size, in_iface, false);
     if (strcmp(in_iface, ethsec) == 0) {
         // Publish the packet to NATS
         s = natsConnection_Publish(conn, "inpktsec", buffer, size);
@@ -253,7 +253,7 @@ void handle_packet_from_nats(natsConnection *nc, natsSubscription *sub, natsMsg 
         }
     }
 
-    print_packet(buffer, size, outiface, true);
+    // print_packet(buffer, size, outiface, true);
 
     natsMsg_Destroy(msg);
 }
