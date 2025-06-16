@@ -9,6 +9,7 @@ from packet_order_code import (
 )
 from scapy.all import IP, TCP, Raw, send, sniff
 from scapy.utils import checksum
+import csv
 
 # Get the host IP from environment
 sec_host = os.getenv("SECURENET_HOST_IP")
@@ -180,9 +181,39 @@ def handle_packet(packet):
                 print("Received enough packets, stopping listener.")
 
                 if USE_COVERT_CHANNEL:
-                    print("Total bits received:", total_bits)
-                    print("Total bit errors:", total_bit_errors)
-                    print(f"Bit error rate: {total_bit_errors / total_bits:.6f}")
+                    k = PERM_CONFIG.K
+                    bps = PERM_CONFIG.BPS
+                    jitter = 5
+                    bit_error = total_bit_errors
+                    bit_recv = total_bits
+                    ber = f"{total_bit_errors / total_bits:.6f}" if total_bits > 0 else "0.0"
+                    capacity = (bit_recv - bit_error) / NUMBER_OF_PACKETS
+
+                    print("Total bit errors:", bit_error)
+                    print("Total bits received:", bit_recv)
+                    print(f"Bit error rate: {ber}")
+                    print(f"Channel capacity: {capacity}")
+                    print(f"Covert channel parameters: K={k}, BPS={bps}, Jitter={jitter}, Number of packets={NUMBER_OF_PACKETS}")
+
+                    # Define the CSV file path
+                    csv_file = "covert_channel_results.csv"
+                    # csv_file = "mitigated_covert_channel_results.csv"
+
+                    # Check if the file exists
+                    file_exists = os.path.isfile(csv_file)
+
+                    # Open the CSV file in append mode
+                    with open(csv_file, mode="a", newline="") as file:
+                        writer = csv.writer(file)
+
+                        # Write the header if the file is newly created
+                        if not file_exists:
+                            writer.writerow(["k", "bps", "jitter", "num_packets", "bit_error", "bit_recv", "ber", "capacity"])
+
+                        # Write the data row
+                        writer.writerow([k, bps, jitter, NUMBER_OF_PACKETS, bit_error, bit_recv, ber, capacity])
+
+                    print(f"Results written to {csv_file}")
 
                 # Exit the program
                 os._exit(0)
